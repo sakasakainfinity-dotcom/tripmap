@@ -1,0 +1,25 @@
+project_id = "travel-memories-map"
+
+[api]
+port = 54321
+schemas = ["public", "storage"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+port = 54323
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000", "https://travel-memories-map.vercel.app"]
+jwt_expiry = 3600
+enable_signup = true
+
+[storage]
+port = 54324
+file_size_limit = "50MB"
+
