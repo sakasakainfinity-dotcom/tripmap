@@ -14,21 +14,21 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
 
-    // 地図
+  
     "maplibre-gl": "^4.5.1",
 
-    // Supabase（Auth/UI）
+    
     "@supabase/supabase-js": "^2.45.0",
     "@supabase/auth-ui-react": "^0.4.7",
     "@supabase/auth-ui-shared": "^0.1.8",
 
-    // UI 基盤（shadcn/uiが内部で使うやつ）
+  
     "lucide-react": "^0.454.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.5.2",
 
-    // Radix UI（よく使う代表どころを先回りで全部）
+
     "@radix-ui/react-slot": "^1.0.2",
     "@radix-ui/react-dialog": "^1.0.5",
     "@radix-ui/react-dropdown-menu": "^2.0.6",
@@ -47,7 +47,6 @@
     "eslint": "^9.9.0",
     "eslint-config-next": "15.0.0",
 
-    // Tailwind系（shadcn/ui使うなら入れとく）
     "tailwindcss": "^3.4.10",
     "postcss": "^8.4.41",
     "autoprefixer": "^10.4.20"
