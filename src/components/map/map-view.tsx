@@ -1,261 +1,120 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import maplibregl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibre-gl";
-import Supercluster from "supercluster";
+import maplibregl, { type Map as MapLibreMap, type MapGeoJSONFeature } from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 
-import { clientEnv } from "@/env-client";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTrigger, DialogTitle } from "@/components/ui/dialog";
-import { Plus } from "lucide-react";
-import { PlaceForm } from "@/components/forms/place-form";
-
-export interface MapPlace {
-  id: string;
-  title: string;
-  address: string | null;
-  lat: number;
-  lng: number;
-  memoryCount: number;
-}
+type Place = { id: string; lat: number; lng: number; title?: string };
 
 interface MapViewProps {
-  places: MapPlace[];
+  places: Place[];
+  onSelectPlace?: (placeId: string) => void;
 }
 
-const CLUSTER_SOURCE_ID = "places";
-const CLUSTER_LAYER_ID = "clusters";
-const CLUSTER_COUNT_LAYER_ID = "cluster-count";
-const UNCLUSTERED_LAYER_ID = "unclustered-point";
+const toGeoJSON = (places: Place[]) => ({
+  type: "FeatureCollection",
+  features: places.map((p) => ({
+    type: "Feature",
+    geometry: { type: "Point", coordinates: [p.lng, p.lat] },
+    properties: { id: p.id, title: p.title ?? "" }
+  }))
+});
 
-export const MapView: React.FC<MapViewProps> = ({ places }) => {
-  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+const MAP_SOURCE_ID = "tm-places";
+const CLUSTER_LAYER_ID = "tm-clusters";
+const CLUSTER_COUNT_LAYER_ID = "tm-cluster-count";
+const POINT_LAYER_ID = "tm-point";
+
+export default function MapView({ places, onSelectPlace }: MapViewProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const router = useRouter();
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const layersInitialized = useRef(false);
+  const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
 
-  const points = useMemo(
-    () =>
-      places.map((place) => ({
-        type: "Feature" as const,
-        properties: {
-          cluster: false,
-          placeId: place.id,
-          title: place.title,
-          memoryCount: place.memoryCount,
-        },
-        geometry: {
-          type: "Point" as const,
-          coordinates: [place.lng, place.lat] as [number, number],
-        },
-      })),
-    [places]
-  );
-
-  const index = useMemo(() => {
-    const supercluster = new Supercluster<{ placeId: string; title: string; memoryCount: number }>({
-      radius: 60,
-      maxZoom: 16,
-    });
-    supercluster.load(points as any);
-    return supercluster;
-  }, [points]);
+  const apiKey = process.env.NEXT_PUBLIC_MAPTILER_KEY;
+  const geojson = useMemo(() => toGeoJSON(places), [places]);
 
   useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) {
-      if (mapRef.current && mapRef.current.isStyleLoaded()) {
-        updateSource(mapRef.current, index);
-      }
-      return;
-    }
+    if (!containerRef.current) return;
+    if (!apiKey) { setMapError("MapTiler API key is not configured."); return; }
 
     const map = new maplibregl.Map({
-      container: mapContainerRef.current,
-      style: `https://api.maptiler.com/maps/streets/style.json?key=${clientEnv.NEXT_PUBLIC_MAPTILER_KEY}`,
-      center: [139.767052, 35.681167],
-      zoom: 4,
+      container: containerRef.current,
+      style: `https://api.maptiler.com/maps/streets-v2/style.json?key=${apiKey}`,
+      center: [139.6917, 35.6895],
+      zoom: 10
     });
 
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+    const onError = (e: any) => { console.error(e); setMapError("Map failed to load."); };
+    map.on("error", onError);
+    map.on("load", () => setIsReady(true));
 
-    map.on("load", () => {
-      map.addSource(CLUSTER_SOURCE_ID, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] }
+    const ro = new ResizeObserver(() => map.resize());
+    ro.observe(containerRef.current);
+
+    mapRef.current = map;
+    return () => { ro.disconnect(); map.off("error", onError); map.remove(); mapRef.current = null; };
+  }, [apiKey]);
+
+  useEffect(() => {
+    if (!mapRef.current || !isReady) return;
+    const map = mapRef.current;
+
+    if (!layersInitialized.current) {
+      map.addSource(MAP_SOURCE_ID, { type: "geojson", data: geojson as any, cluster: true, clusterMaxZoom: 16, clusterRadius: 50 });
+
+      map.addLayer({
+        id: CLUSTER_LAYER_ID, type: "circle", source: MAP_SOURCE_ID, filter: ["has", "point_count"],
+        paint: { "circle-color": "#2563eb", "circle-radius": ["step", ["get","point_count"], 20, 20, 25, 50, 30], "circle-opacity": 0.8 }
       });
 
       map.addLayer({
-        id: CLUSTER_LAYER_ID,
-        type: "circle",
-        source: CLUSTER_SOURCE_ID,
-        filter: ["has", "point_count"],
-        paint: {
-          "circle-color": [
-            "step",
-            ["get", "point_count"],
-            "#38bdf8",
-            5,
-            "#0ea5e9",
-            10,
-            "#0369a1",
-          ],
-          "circle-radius": [
-            "step",
-            ["get", "point_count"],
-            20,
-            5,
-            26,
-            10,
-            32,
-          ],
-        },
+        id: CLUSTER_COUNT_LAYER_ID, type: "symbol", source: MAP_SOURCE_ID, filter: ["has","point_count"],
+        layout: { "text-field": ["get","point_count_abbreviated"], "text-size": 12 },
+        paint: { "text-color": "#ffffff" }
       });
 
       map.addLayer({
-        id: CLUSTER_COUNT_LAYER_ID,
-        type: "symbol",
-        source: CLUSTER_SOURCE_ID,
-        filter: ["has", "point_count"],
-        layout: {
-          "text-field": "{point_count_abbreviated}",
-          "text-font": ["Open Sans Regular"],
-          "text-size": 12,
-        },
-        paint: {
-          "text-color": "#fff",
-        },
+        id: POINT_LAYER_ID, type: "circle", source: MAP_SOURCE_ID, filter: ["!", ["has","point_count"]],
+        paint: { "circle-color": "#f97316", "circle-radius": 10, "circle-stroke-width": 2, "circle-stroke-color": "#ffffff" }
       });
 
-      map.addLayer({
-        id: UNCLUSTERED_LAYER_ID,
-        type: "circle",
-        source: CLUSTER_SOURCE_ID,
-        filter: ["!", ["has", "point_count"]],
-        paint: {
-          "circle-color": "#0ea5e9",
-          "circle-radius": 10,
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#fff",
-        },
-      });
-
-      map.on("moveend", () => updateSource(map, index));
-
-      map.on("click", CLUSTER_LAYER_ID, (event) => {
-        const features = map.queryRenderedFeatures(event.point, {
-          layers: [CLUSTER_LAYER_ID],
-        });
-        const clusterId = features[0]?.properties?.cluster_id;
-        if (clusterId && typeof clusterId === "number") {
-          index.getClusterExpansionZoom(clusterId, (err, zoom) => {
+      map.on("click", CLUSTER_LAYER_ID, (e) => {
+        const f = map.queryRenderedFeatures(e.point, { layers: [CLUSTER_LAYER_ID] }) as MapGeoJSONFeature[];
+        const cid = f[0]?.properties?.cluster_id;
+        const src = map.getSource(MAP_SOURCE_ID) as maplibregl.GeoJSONSource;
+        if (cid && src) {
+          src.getClusterExpansionZoom(cid, (err, zoom) => {
             if (err) return;
-            map.easeTo({
-              center: (features[0].geometry as any).coordinates as [number, number],
-              zoom,
-            });
+            const [lng, lat] = f[0].geometry.coordinates as [number, number];
+            map.easeTo({ center: [lng, lat], zoom });
           });
         }
       });
 
-      map.on("click", UNCLUSTERED_LAYER_ID, (event) => {
-        const feature = event.features?.[0];
-        const placeId = feature?.properties?.placeId as string | undefined;
-        if (placeId) {
-          router.push(`/places/${placeId}`);
-        }
+      map.on("click", POINT_LAYER_ID, (e) => {
+        const f = map.queryRenderedFeatures(e.point, { layers: [POINT_LAYER_ID] }) as MapGeoJSONFeature[];
+        const id = f[0]?.properties?.id as string | undefined;
+        if (id && onSelectPlace) onSelectPlace(id);
       });
 
-      map.on("mouseenter", CLUSTER_LAYER_ID, () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", CLUSTER_LAYER_ID, () => {
-        map.getCanvas().style.cursor = "";
-      });
-      map.on("mouseenter", UNCLUSTERED_LAYER_ID, () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", UNCLUSTERED_LAYER_ID, () => {
-        map.getCanvas().style.cursor = "";
-      });
+      map.on("mouseenter", CLUSTER_LAYER_ID, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", CLUSTER_LAYER_ID, () => (map.getCanvas().style.cursor = ""));
+      map.on("mouseenter", POINT_LAYER_ID, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", POINT_LAYER_ID, () => (map.getCanvas().style.cursor = ""));
 
-      updateSource(map, index);
-    });
-
-    mapRef.current = map;
-
-    return () => {
-      map.remove();
-      mapRef.current = null;
-    };
-  }, [index, router]);
-
-  useEffect(() => {
-    if (mapRef.current && mapRef.current.isStyleLoaded()) {
-      updateSource(mapRef.current, index);
-    }
-  }, [index]);
-
-  useEffect(() => {
-    if (!mapRef.current || places.length === 0) {
-      return;
+      layersInitialized.current = true;
     }
 
-    const bounds = new maplibregl.LngLatBounds();
-    places.forEach((place) => {
-      bounds.extend([place.lng, place.lat]);
-    });
+    const src = map.getSource(MAP_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+    if (src) src.setData(geojson as any);
+  }, [geojson, isReady, onSelectPlace]);
 
-    if (bounds.isEmpty()) {
-      return;
-    }
-
-    mapRef.current.fitBounds(bounds, { padding: 80, maxZoom: 10, duration: 0 });
-  }, [places]);
-
-  return (
-    <div className="relative h-[calc(100vh-8rem)] w-full overflow-hidden rounded-2xl border shadow-lg">
-      <div ref={mapContainerRef} className="h-full w-full" />
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogTrigger asChild>
-          <Button
-            size="icon"
-            className="absolute bottom-6 right-6 h-12 w-12 rounded-full shadow-lg"
-          >
-            <Plus className="h-6 w-6" />
-          </Button>
-        </DialogTrigger>
-        <DialogContent className="sm:max-w-md">
-          <DialogTitle>新しい場所を追加</DialogTitle>
-          <PlaceForm
-            onSuccess={() => {
-              setIsDialogOpen(false);
-              router.refresh();
-            }}
-          />
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-};
-
-const updateSource = (
-  map: MapLibreMap,
-  index: Supercluster<{ placeId: string; title: string; memoryCount: number }>
-) => {
-  const source = map.getSource(CLUSTER_SOURCE_ID) as GeoJSONSource | undefined;
-  if (!source) return;
-
-  const bounds = map.getBounds();
-  const clusters = index.getClusters([
-    bounds.getWest(),
-    bounds.getSouth(),
-    bounds.getEast(),
-    bounds.getNorth(),
-  ], Math.round(map.getZoom()));
-
-  source.setData({
-    type: "FeatureCollection",
-    features: clusters as GeoJSON.Feature<GeoJSON.Geometry, GeoJSON.GeoJsonProperties>[],
-  });
-};
+  if (mapError) {
+    return <div className="flex h-full w-full items-center justify-center text-red-600">{mapError}</div>;
+  }
+  return <div ref={containerRef} className="w-full h-full min-h-[400px]" />;
+}
